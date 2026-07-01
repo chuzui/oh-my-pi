@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed fuzzy search (session tree, model/session/settings selectors) silently ignoring non-ASCII queries. The normalizer stripped every character outside `[a-z0-9]`, so CJK and other non-Latin scripts collapsed to an empty query that matched everything — typing Chinese in the tree filtered nothing. Non-ASCII letters and digits are now preserved via Unicode property escapes.
+
 ## [16.2.12] - 2026-07-01
 
 ### Fixed

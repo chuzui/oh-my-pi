@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { fuzzyFilter } from "@oh-my-pi/pi-tui/fuzzy";
+import { fuzzyFilter, fuzzyMatch } from "@oh-my-pi/pi-tui/fuzzy";
 
 describe("fuzzyFilter", () => {
 	it("does not satisfy long tokens by scattering letters across unrelated words", () => {
@@ -34,5 +34,16 @@ describe("fuzzyFilter", () => {
 		const items = ["Ollama", "Kagi", "OpenCode Go", "Tavily"];
 
 		expect(fuzzyFilter(items, "og", item => item)).toEqual(["OpenCode Go"]);
+	});
+	it("matches CJK queries instead of stripping them to an empty match-all", () => {
+		// Regression: non-ASCII letters were erased by ASCII-only normalization,
+		// collapsing every CJK query to "" which matches everything.
+		const items = ["文件搜索", "图片编辑", "设置面板", "搜索历史"];
+		const results = fuzzyFilter(items, "搜索", item => item);
+		expect(results).toEqual(expect.arrayContaining(["文件搜索", "搜索历史"]));
+		expect(results).toHaveLength(2);
+
+		expect(fuzzyMatch("中文", "这是中文测试").matches).toBe(true);
+		expect(fuzzyMatch("中文", "这是英文测试").matches).toBe(false);
 	});
 });

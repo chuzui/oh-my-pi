@@ -47,7 +47,7 @@ function normalizeForSearch(value: string): string {
 		.replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
 		.replace(/([a-z0-9])([A-Z])/g, "$1 $2")
 		.toLowerCase()
-		.replace(/[^a-z0-9]+/g, " ")
+		.replace(/[^\p{L}\p{N}]+/gu, " ")
 		.trim()
 		.replace(/\s+/g, " ");
 }
