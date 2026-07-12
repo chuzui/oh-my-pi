@@ -251,4 +251,125 @@ describe("history:// protocol", () => {
 		expect(values).toContain("HubAgent");
 		expect(values).not.toContain("AdvisorProbe");
 	});
+
+	it("history://<id> resolves an unregistered agent from its session file on disk", async () => {
+		await withTempDir(async dir => {
+			const sessionFile = path.join(dir, "main.jsonl");
+			const artifactsDir = path.join(dir, "main");
+			await fs.mkdir(artifactsDir, { recursive: true });
+			await Bun.write(sessionFile, sessionFixtureJsonl());
+			// Subagent session file on disk — the agent is NOT in the registry.
+			const subSessionFile = path.join(artifactsDir, "Ghost.jsonl");
+			await Bun.write(subSessionFile, sessionFixtureJsonl());
+
+			AgentRegistry.global().register({
+				id: "Main",
+				displayName: "main",
+				kind: "main",
+				session: fakeLiveSession([]),
+				sessionFile,
+				status: "running",
+			});
+
+			const resource = await InternalUrlRouter.instance().resolve("history://Ghost");
+
+			expect(resource.content).toContain("# Ghost (on disk)");
+			expect(resource.content).toContain("parked hello");
+			expect(resource.sourcePath).toBe(subSessionFile);
+			expect(resource.notes?.join("\n")).toContain("not registered");
+		});
+	});
+
+	it("resolves an on-disk agent case-insensitively", async () => {
+		await withTempDir(async dir => {
+			const sessionFile = path.join(dir, "main.jsonl");
+			const artifactsDir = path.join(dir, "main");
+			await fs.mkdir(artifactsDir, { recursive: true });
+			await Bun.write(sessionFile, sessionFixtureJsonl());
+			await Bun.write(path.join(artifactsDir, "Ghost.jsonl"), sessionFixtureJsonl());
+
+			AgentRegistry.global().register({
+				id: "Main",
+				displayName: "main",
+				kind: "main",
+				session: fakeLiveSession([]),
+				sessionFile,
+				status: "running",
+			});
+
+			const resource = await InternalUrlRouter.instance().resolve("history://ghost");
+			expect(resource.content).toContain("# ghost (on disk)");
+		});
+	});
+
+	it("bare history:// lists on-disk agents alongside registered ones", async () => {
+		await withTempDir(async dir => {
+			const sessionFile = path.join(dir, "main.jsonl");
+			const artifactsDir = path.join(dir, "main");
+			await fs.mkdir(artifactsDir, { recursive: true });
+			await Bun.write(path.join(artifactsDir, "Ghost.jsonl"), sessionFixtureJsonl());
+
+			AgentRegistry.global().register({
+				id: "Main",
+				displayName: "main",
+				kind: "main",
+				session: fakeLiveSession([]),
+				sessionFile,
+				status: "running",
+			});
+
+			const resource = await InternalUrlRouter.instance().resolve("history://");
+
+			expect(resource.content).toContain("| Main |");
+			expect(resource.content).toContain("| Ghost | disk |");
+		});
+	});
+
+	it("includes on-disk agents in history:// completions", async () => {
+		await withTempDir(async dir => {
+			const sessionFile = path.join(dir, "main.jsonl");
+			const artifactsDir = path.join(dir, "main");
+			await fs.mkdir(artifactsDir, { recursive: true });
+			await Bun.write(path.join(artifactsDir, "Ghost.jsonl"), sessionFixtureJsonl());
+
+			AgentRegistry.global().register({
+				id: "Main",
+				displayName: "main",
+				kind: "main",
+				session: fakeLiveSession([]),
+				sessionFile,
+				status: "running",
+			});
+
+			const completions = await new HistoryProtocolHandler().complete();
+			const values = completions.map(c => c.value);
+			expect(values).toContain("Main");
+			expect(values).toContain("Ghost");
+		});
+	});
+
+	it("discovers nested subagent sessions on disk", async () => {
+		await withTempDir(async dir => {
+			const sessionFile = path.join(dir, "main.jsonl");
+			const artifactsDir = path.join(dir, "main");
+			const subDir = path.join(artifactsDir, "Parent");
+			await fs.mkdir(subDir, { recursive: true });
+			await Bun.write(path.join(artifactsDir, "Parent.jsonl"), sessionFixtureJsonl());
+			await Bun.write(path.join(subDir, "Parent.Child.jsonl"), sessionFixtureJsonl());
+
+			AgentRegistry.global().register({
+				id: "Main",
+				displayName: "main",
+				kind: "main",
+				session: fakeLiveSession([]),
+				sessionFile,
+				status: "running",
+			});
+
+			const completions = await new HistoryProtocolHandler().complete();
+			const values = completions.map(c => c.value);
+			expect(values).toContain("Parent");
+			expect(values).toContain("Parent.Child");
+		});
+	});
 });

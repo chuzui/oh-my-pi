@@ -35,7 +35,7 @@ export function artifactsDirsFromRegistry(): string[] {
 		if (!dirs.includes(dir)) dirs.push(dir);
 	};
 	for (const ref of AgentRegistry.global().list()) {
-		addDir(ref.session?.sessionManager.getArtifactsDir());
+		addDir(ref.session?.sessionManager?.getArtifactsDir());
 		if (ref.sessionFile) addDir(ref.sessionFile.slice(0, -6));
 	}
 	for (const dir of extraArtifactsDirs) addDir(dir);

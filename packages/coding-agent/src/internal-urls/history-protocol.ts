@@ -3,16 +3,23 @@
  *
  * Exposes agent transcripts as concise markdown. Live refs render from the
  * in-memory message array; parked refs (session disposed, sessionFile
- * retained) load read-only from the JSONL session file — no writer, no lock.
+ * retained) load read-only from the JSONL session file. Agents no longer in
+ * the registry (released one-shot helpers, or subagents from a resumed
+ * session whose in-memory entries were lost) are discovered on disk and
+ * served read-only the same way.
  *
  * URL forms:
- * - history:// - Index of all registry agents (id, status, kind, last activity)
+ * - history:// - Index of all agents (registered + on-disk)
  * - history://<agentId> - Concise markdown transcript of that agent
  */
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import { isEnoent } from "@oh-my-pi/pi-utils";
 import type { AgentRef } from "../registry/agent-registry";
 import { AgentRegistry } from "../registry/agent-registry";
 import { formatSessionHistoryMarkdown } from "../session/session-history-format";
 import { loadSessionMessagesReadOnly } from "../session/session-loader";
+import { artifactsDirsFromRegistry } from "./registry-helpers";
 import type { InternalResource, InternalUrl, ProtocolHandler, UrlCompletion } from "./types";
 
 /** Humanize a last-activity timestamp as `Ns/Nm/Nh/Nd ago`. */
@@ -31,7 +38,9 @@ function formatAgo(timestamp: number): string {
  * Handler for history:// URLs.
  *
  * Resolves agent ids against the global AgentRegistry, serving transcripts
- * for both live and parked agents.
+ * for live and parked agents. Agents absent from the registry but with a
+ * session file on disk (released subagents, resumed sessions) are loaded
+ * read-only as a fallback.
  */
 export class HistoryProtocolHandler implements ProtocolHandler {
 	readonly scheme = "history";
@@ -45,7 +54,8 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 		const visible = registry.list().filter(ref => ref.kind !== "advisor");
 
 		if (!agentId) {
-			const content = this.#renderIndex(visible);
+			const diskSessions = await this.#scanDiskSessions();
+			const content = await this.#renderIndex(visible, diskSessions);
 			return {
 				url: url.href,
 				content,
@@ -54,65 +64,143 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 			};
 		}
 
+		// Registry lookup (case-insensitive fallback — agent ids are human-typed).
 		let ref = registry.get(agentId);
 		if (ref?.kind === "advisor") ref = undefined;
 		if (!ref) {
-			// Case-insensitive fallback: agent ids are human-typed (e.g. AuthLoader).
 			const lower = agentId.toLowerCase();
 			ref = visible.find(candidate => candidate.id.toLowerCase() === lower);
-		}
-		if (!ref) {
-			const known = visible.map(candidate => candidate.id);
-			const knownStr = known.length > 0 ? known.join(", ") : "none";
-			throw new Error(`Unknown agent: ${agentId}\nKnown agents: ${knownStr}\nList all with history://`);
 		}
 
 		const notes: string[] = [];
 		let messages: unknown[];
-		if (ref.session) {
-			messages = ref.session.messages;
-			notes.push("Source: live session");
-		} else if (ref.sessionFile) {
-			messages = await loadSessionMessagesReadOnly(ref.sessionFile);
-			notes.push(`Source: session file (read-only, ${ref.status})`);
+		let title: string;
+		let sourcePath: string | undefined;
+
+		if (ref) {
+			title = `${ref.id} (${ref.status})`;
+			sourcePath = ref.sessionFile ?? undefined;
+			if (ref.session) {
+				messages = ref.session.messages;
+				notes.push("Source: live session");
+			} else if (ref.sessionFile) {
+				messages = await loadSessionMessagesReadOnly(ref.sessionFile);
+				notes.push(`Source: session file (read-only, ${ref.status})`);
+			} else {
+				throw new Error(`Agent ${ref.id} has no transcript: session is gone and no session file was retained`);
+			}
 		} else {
-			throw new Error(`Agent ${ref.id} has no transcript: session is gone and no session file was retained`);
+			// Disk fallback: agent not in registry — find its session file on disk.
+			const diskSessions = await this.#scanDiskSessions();
+			const filePath = this.#lookupDisk(diskSessions, agentId);
+			if (!filePath) {
+				const known = [...visible.map(r => r.id), ...diskSessions.keys()];
+				const knownStr = known.length > 0 ? known.join(", ") : "none";
+				throw new Error(`Unknown agent: ${agentId}\nKnown agents: ${knownStr}\nList all with history://`);
+			}
+			messages = await loadSessionMessagesReadOnly(filePath);
+			title = `${agentId} (on disk)`;
+			sourcePath = filePath;
+			notes.push("Source: session file (read-only, not registered)");
 		}
 
-		const content = formatSessionHistoryMarkdown(messages, { title: `${ref.id} (${ref.status})` });
+		const content = formatSessionHistoryMarkdown(messages, { title });
 		return {
 			url: url.href,
 			content,
 			contentType: "text/markdown",
 			size: Buffer.byteLength(content, "utf-8"),
-			sourcePath: ref.sessionFile ?? undefined,
+			sourcePath,
 			notes,
 		};
 	}
 
-	#renderIndex(refs: AgentRef[]): string {
+	/** Case-insensitive disk lookup matching the registry fallback semantics. */
+	#lookupDisk(sessions: Map<string, string>, agentId: string): string | undefined {
+		const exact = sessions.get(agentId);
+		if (exact) return exact;
+		const lower = agentId.toLowerCase();
+		for (const [id, filePath] of sessions) {
+			if (id.toLowerCase() === lower) return filePath;
+		}
+		return undefined;
+	}
+
+	async #renderIndex(refs: AgentRef[], diskSessions: Map<string, string>): Promise<string> {
+		const registeredIds = new Set(refs.map(r => r.id));
+		const diskOnly = [...diskSessions.keys()].filter(id => !registeredIds.has(id)).sort();
+
 		const lines: string[] = ["# Agents", ""];
-		if (refs.length === 0) {
-			lines.push("No agents registered.");
+		if (refs.length === 0 && diskOnly.length === 0) {
+			lines.push("No agents found.");
 			return `${lines.join("\n")}\n`;
 		}
+
 		lines.push("| id | status | kind | parent | last activity |", "|---|---|---|---|---|");
 		for (const ref of refs) {
 			lines.push(
 				`| ${ref.id} | ${ref.status} | ${ref.kind} | ${ref.parentId ?? "—"} | ${formatAgo(ref.lastActivity)} |`,
 			);
 		}
+		for (const id of diskOnly) {
+			let ago = "—";
+			try {
+				const stat = await fs.stat(diskSessions.get(id)!);
+				ago = formatAgo(stat.mtimeMs);
+			} catch {
+				// Stat failures are non-fatal.
+			}
+			lines.push(`| ${id} | disk | sub | — | ${ago} |`);
+		}
 		lines.push("", "Read a transcript with `read history://<id>`.");
 		return `${lines.join("\n")}\n`;
 	}
 
 	async complete(): Promise<UrlCompletion[]> {
-		return AgentRegistry.global()
-			.list()
-			.filter(ref => ref.kind !== "advisor")
-			.map(ref => ({
-				value: ref.id,
-				description: `${ref.status} · ${ref.kind}${ref.parentId ? ` · parent ${ref.parentId}` : ""}`,
-			}));
+		const registry = AgentRegistry.global();
+		const refs = registry.list().filter(ref => ref.kind !== "advisor");
+		const registeredIds = new Set(refs.map(ref => ref.id));
+
+		const completions: UrlCompletion[] = refs.map(ref => ({
+			value: ref.id,
+			description: `${ref.status} · ${ref.kind}${ref.parentId ? ` · parent ${ref.parentId}` : ""}`,
+		}));
+
+		const diskSessions = await this.#scanDiskSessions();
+		for (const id of [...diskSessions.keys()].sort()) {
+			if (!registeredIds.has(id)) {
+				completions.push({ value: id, description: "disk · sub" });
+			}
+		}
+		return completions;
+	}
+
+	/**
+	 * Recursively scan artifacts dirs for subagent session files whose agents
+	 * are no longer in the registry (released one-shots, or subagents from a
+	 * resumed session). Returns a map of agentId → absolute file path.
+	 * Advisor transcripts (`__advisor*.jsonl`) and backups are excluded.
+	 */
+	async #scanDiskSessions(): Promise<Map<string, string>> {
+		const result = new Map<string, string>();
+		const scan = async (dir: string): Promise<void> => {
+			let names: string[];
+			try {
+				names = await fs.readdir(dir);
+			} catch (err) {
+				if (isEnoent(err)) return;
+				throw err;
+			}
+			for (const name of names) {
+				if (!name.endsWith(".jsonl") || name.includes(".bak")) continue;
+				if (name.startsWith("__advisor")) continue;
+				const agentId = name.slice(0, -6);
+				if (!result.has(agentId)) result.set(agentId, path.join(dir, name));
+				// Subagent children nest one level deeper under `<dir>/<agentId>/`.
+				await scan(path.join(dir, agentId));
+			}
+		};
+		for (const dir of artifactsDirsFromRegistry()) await scan(dir);
+		return result;
 	}
 }

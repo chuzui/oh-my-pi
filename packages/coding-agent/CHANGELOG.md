@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `history://` URLs, the `history://` index, and `history://` prompt-mode autocomplete only listing agents still in the in-memory registry. Subagents that were unregistered (released one-shot helpers) or lost on session resume are now discovered on disk (their `.jsonl` session files in the artifacts directories) and served read-only, matching `agent://` which already reads from disk. Also fixed `artifactsDirsFromRegistry()` crashing on sessions without a `sessionManager`.
+
 ## [16.4.6] - 2026-07-12
 
 ### Added
