@@ -1855,7 +1855,7 @@ export class Editor implements Component, Focusable {
 					this.#tryTriggerAutocomplete();
 				}
 			}
-		} else {
+	} else {
 			this.#debouncedUpdateAutocomplete();
 		}
 	}
@@ -3102,8 +3102,10 @@ export class Editor implements Component, Focusable {
 			this.#autocompleteState = "force";
 			this.onAutocompleteUpdate?.();
 		} else {
-			this.#cancelAutocomplete();
-			this.onAutocompleteUpdate?.();
+			// Force file completion found nothing — fall back to regular
+			// completion (handles # prompt actions, @ references, etc.)
+			// instead of cancelling outright.
+			await this.#tryTriggerAutocomplete(true);
 		}
 	}
 

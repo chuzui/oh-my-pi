@@ -150,6 +150,43 @@ describe("Editor slash autocomplete acceptance", () => {
 			fs.rmSync(baseDir, { recursive: true, force: true });
 		}
 	});
+	it("preserves argument completions when typing space after a command with getArgumentCompletions", async () => {
+		const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "editor-arg-completion-"));
+		try {
+			const editor = new Editor(defaultEditorTheme);
+			editor.setAutocompleteProvider(
+				new CombinedAutocompleteProvider(
+					[
+						{
+							name: "mcp",
+							description: "Manage MCP",
+							allowArgs: true,
+							getArgumentCompletions: (prefix: string) =>
+								prefix === "" ? [{ value: "server1", label: "server1" }] : null,
+						},
+					],
+					baseDir,
+				),
+			);
+
+			const opened = onceAutocompleteUpdate(editor);
+			editor.handleInput("/");
+			editor.handleInput("m");
+			editor.handleInput("c");
+			editor.handleInput("p");
+			await opened;
+
+			// Type space — debounced update should show argument completions,
+			// not close the popup.
+			const updated = onceAutocompleteUpdate(editor);
+			editor.handleInput(" ");
+			await updated;
+			expect(editor.isShowingAutocomplete()).toBe(true);
+		} finally {
+			fs.rmSync(baseDir, { recursive: true, force: true });
+		}
+	});
+
 });
 class SyncSlashProvider implements AutocompleteProvider {
 	async getSuggestions(

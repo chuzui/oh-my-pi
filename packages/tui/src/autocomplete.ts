@@ -432,6 +432,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			: hasPromptTextBeforeLeadingSlash
 				? null
 				: leadingSlashStart;
+		let inSlashArgs = false;
 		if (slashStart !== null) {
 			const commandText = textBeforeCursor.slice(slashStart);
 			const spaceIndex = commandText.indexOf(" ");
@@ -472,19 +473,20 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 					return null;
 				}
 				if (command && (!("allowArgs" in command) || command.allowArgs !== false)) {
-					if (!("getArgumentCompletions" in command) || !command.getArgumentCompletions) {
-						return null; // No argument completion for this command
+					if ("getArgumentCompletions" in command && command.getArgumentCompletions) {
+						const argumentSuggestions = await command.getArgumentCompletions(argumentText);
+						if (Array.isArray(argumentSuggestions) && argumentSuggestions.length > 0) {
+							return {
+								items: argumentSuggestions,
+								prefix: argumentText,
+							};
+						}
 					}
-
-					const argumentSuggestions = await command.getArgumentCompletions(argumentText);
-					if (!Array.isArray(argumentSuggestions) || argumentSuggestions.length === 0) {
-						return null;
-					}
-
-					return {
-						items: argumentSuggestions,
-						prefix: argumentText,
-					};
+					// Command accepts free-text args but offered no argument
+					// completion. Fall through to @ file and path completion
+					// so `/btw @file` and `/btw src/app` work. The flag
+					// suppresses only the empty-prefix listing (see below).
+					inSlashArgs = true;
 				}
 			}
 		}
@@ -521,8 +523,12 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			};
 		}
 
-		// Check for file paths - triggered by Tab or if we detect a path pattern
-		const pathMatch = this.#extractPathPrefix(textBeforeCursor, false);
+		// Check for file paths - triggered by Tab or if we detect a path pattern.
+		// Inside slash-command args, suppress the empty-prefix listing that
+		// fires on trailing space so `/btw ` does not list every file.
+		// Non-empty path prefixes (e.g. `/btw src/app`) still work.
+		const rawPath = this.#extractPathPrefix(textBeforeCursor, false);
+		const pathMatch = inSlashArgs && rawPath === "" ? null : rawPath;
 
 		if (pathMatch !== null) {
 			const suggestions = await this.#getFileSuggestions(pathMatch);
@@ -1000,9 +1006,34 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		const currentLine = lines[cursorLine] || "";
 		const textBeforeCursor = currentLine.slice(0, cursorCol);
 
-		// Don't trigger if we're typing a slash command at the start of the line
-		if (textBeforeCursor.trim().startsWith("/") && !textBeforeCursor.trim().includes(" ")) {
+		// Don't trigger if we're typing a slash command name (no space yet).
+		// Use trimStart to preserve trailing space — `/btw ` is args, not a name.
+		const trimmedStart = textBeforeCursor.trimStart();
+		if (trimmedStart.startsWith("/") && !trimmedStart.includes(" ")) {
 			return null;
+		}
+		// Inside slash command args, only force file completion for
+		// free-text positions. Defer to getSuggestions when the command
+		// has argument completions that actually match the current input
+		// (e.g. `/goal s` → subcommand list). Once past the subcommand
+		// (e.g. `/goal set `), getArgumentCompletions returns null and
+		// file completion proceeds normally.
+		const slashStart = findLeadingSlashCommandStart(textBeforeCursor);
+		if (slashStart !== null) {
+			const commandText = textBeforeCursor.slice(slashStart);
+			const spaceIndex = commandText.indexOf(" ");
+			if (spaceIndex !== -1) {
+				const commandName = commandText.slice(1, spaceIndex);
+				const command = this.#commands.find(cmd => commandMatchesNameOrAlias(cmd, commandName));
+				if (command) {
+					if ("allowArgs" in command && command.allowArgs === false) return null;
+					if ("getArgumentCompletions" in command && command.getArgumentCompletions) {
+						const argumentText = commandText.slice(spaceIndex + 1);
+						const argSuggestions = await command.getArgumentCompletions(argumentText);
+						if (Array.isArray(argSuggestions) && argSuggestions.length > 0) return null;
+					}
+				}
+			}
 		}
 
 		// Force extract path prefix - this will always return something
@@ -1025,8 +1056,8 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		const currentLine = lines[cursorLine] || "";
 		const textBeforeCursor = currentLine.slice(0, cursorCol);
 
-		// Don't trigger if we're typing a slash command at the start of the line
-		if (textBeforeCursor.trim().startsWith("/") && !textBeforeCursor.trim().includes(" ")) {
+		const trimmedStart = textBeforeCursor.trimStart();
+		if (trimmedStart.startsWith("/") && !trimmedStart.includes(" ")) {
 			return false;
 		}
 

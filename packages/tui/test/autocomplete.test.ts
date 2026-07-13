@@ -199,7 +199,7 @@ describe("CombinedAutocompleteProvider", () => {
 			}
 		});
 
-		it("treats @ file-reference tokens as literal text inside slash command arguments without completions", async () => {
+		it("returns @ file-reference completions inside slash command arguments without dedicated completions", async () => {
 			const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "autocomplete-rename-args-"));
 			try {
 				fs.writeFileSync(path.join(baseDir, "copy-target.ts"), "export {};\n");
@@ -210,7 +210,45 @@ describe("CombinedAutocompleteProvider", () => {
 				const line = "/rename repro @";
 				const result = await provider.getSuggestions([line], 0, line.length);
 
+				expect(result?.prefix).toBe("@");
+				expect(result?.items.map(item => item.value)).toContain("@copy-target.ts");
+			} finally {
+				fs.rmSync(baseDir, { recursive: true, force: true });
+			}
+		});
+		it("does not return file suggestions for empty slash command arguments", async () => {
+			const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "autocomplete-btw-empty-"));
+			try {
+				fs.writeFileSync(path.join(baseDir, "copy-target.ts"), "export {};\n");
+				const provider = new CombinedAutocompleteProvider(
+					[{ name: "btw", description: "Ask a side question", allowArgs: true }],
+					baseDir,
+				);
+				const line = "/btw ";
+				const result = await provider.getSuggestions([line], 0, line.length);
+
+				// Empty-prefix path listing is suppressed inside slash args so
+				// `/btw ` does not list every file regardless of the trigger path
+				// (typing space, backspace re-trigger, etc.).
 				expect(result).toBeNull();
+			} finally {
+				fs.rmSync(baseDir, { recursive: true, force: true });
+			}
+		});
+		it("returns path completions for path-like slash command arguments", async () => {
+			const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "autocomplete-btw-path-"));
+			try {
+				fs.mkdirSync(path.join(baseDir, "src"));
+				fs.writeFileSync(path.join(baseDir, "src", "app.ts"), "export {};\n");
+				const provider = new CombinedAutocompleteProvider(
+					[{ name: "btw", description: "Ask a side question", allowArgs: true }],
+					baseDir,
+				);
+				const line = "/btw src/app";
+				const result = await provider.getSuggestions([line], 0, line.length);
+
+				expect(result?.prefix).toBe("src/app");
+				expect(result?.items.map(item => item.value)).toContain("src/app.ts");
 			} finally {
 				fs.rmSync(baseDir, { recursive: true, force: true });
 			}
@@ -259,6 +297,87 @@ describe("CombinedAutocompleteProvider", () => {
 					prefix: "repro @",
 					items: [{ value: "repro @literal", label: "Keep @ in the title" }],
 				});
+			} finally {
+				fs.rmSync(baseDir, { recursive: true, force: true });
+			}
+		});
+	});
+
+	describe("getForceFileSuggestions slash-command deferral", () => {
+		it("defers to getSuggestions when getArgumentCompletions has results", async () => {
+			const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "autocomplete-force-defer-"));
+			try {
+				fs.writeFileSync(path.join(baseDir, "app.ts"), "export {};\n");
+				const provider = new CombinedAutocompleteProvider(
+					[
+						{
+							name: "goal",
+							description: "Goal mode",
+							allowArgs: true,
+							getArgumentCompletions: (prefix: string) =>
+								prefix.includes(" ") || prefix === ""
+									? (prefix === "" ? [{ value: "set ", label: "set" }] : null)
+									: [{ value: "set ", label: "set" }],
+						},
+					],
+					baseDir,
+				);
+				// `/goal ` — subcommand list is available, defer to getSuggestions
+				const result = await provider.getForceFileSuggestions(["/goal "], 0, 6);
+				expect(result).toBeNull();
+			} finally {
+				fs.rmSync(baseDir, { recursive: true, force: true });
+			}
+		});
+
+		it("returns file suggestions past the subcommand boundary", async () => {
+			const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "autocomplete-force-past-sub-"));
+			try {
+				fs.writeFileSync(path.join(baseDir, "app.ts"), "export {};\n");
+				const provider = new CombinedAutocompleteProvider(
+					[
+						{
+							name: "goal",
+							description: "Goal mode",
+							allowArgs: true,
+							getArgumentCompletions: (prefix: string) =>
+								prefix.includes(" ") ? null : [{ value: "set ", label: "set" }],
+						},
+					],
+					baseDir,
+				);
+				// `/goal set ` — past subcommand, getArgumentCompletions returns null
+				const result = await provider.getForceFileSuggestions(["/goal set "], 0, 10);
+				expect(result?.items.map(item => item.value)).toContain("app.ts");
+			} finally {
+				fs.rmSync(baseDir, { recursive: true, force: true });
+			}
+		});
+		it("defers to getSuggestions for allowArgs:false commands", async () => {
+			const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "autocomplete-force-noargs-"));
+			try {
+				fs.writeFileSync(path.join(baseDir, "app.ts"), "export {};\n");
+				const provider = new CombinedAutocompleteProvider(
+					[{ name: "quit", description: "Quit", allowArgs: false }],
+					baseDir,
+				);
+				const result = await provider.getForceFileSuggestions(["/quit "], 0, 6);
+				expect(result).toBeNull();
+			} finally {
+				fs.rmSync(baseDir, { recursive: true, force: true });
+			}
+		});
+
+		it("returns file suggestions for free-text commands", async () => {
+			const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "autocomplete-force-freetext-"));
+			try {
+				fs.writeFileSync(path.join(baseDir, "app.ts"), "export {};\n");
+				const provider = new CombinedAutocompleteProvider(
+					[{ name: "btw", description: "Ask", allowArgs: true }],
+					baseDir,
+				);
+				const result = await provider.getForceFileSuggestions(["/btw "], 0, 5);
+				expect(result?.items.map(item => item.value)).toContain("app.ts");
 			} finally {
 				fs.rmSync(baseDir, { recursive: true, force: true });
 			}

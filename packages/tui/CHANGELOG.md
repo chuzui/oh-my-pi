@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `@` file-reference and bare-path completion not triggering inside slash command arguments (e.g. `/btw @file`, `/btw src/app`). `CombinedAutocompleteProvider` short-circuited to `null` for commands with `allowArgs: true` but no `getArgumentCompletions`, blocking both `@` and path-prefix handlers. It now falls through to both, suppressing only the empty-prefix path listing so `/btw ` does not list every file. `getForceFileSuggestions` (Tab) now defers to `getSuggestions` for commands with `getArgumentCompletions` or `allowArgs: false`, so argument completions are preserved.
+
 ## [16.4.7] - 2026-07-12
 
 ### Fixed
