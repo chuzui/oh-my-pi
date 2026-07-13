@@ -1855,7 +1855,7 @@ export class Editor implements Component, Focusable {
 					this.#tryTriggerAutocomplete();
 				}
 			}
-	} else {
+		} else {
 			this.#debouncedUpdateAutocomplete();
 		}
 	}

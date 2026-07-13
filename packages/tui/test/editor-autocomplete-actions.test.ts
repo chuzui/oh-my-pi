@@ -186,7 +186,6 @@ describe("Editor slash autocomplete acceptance", () => {
 			fs.rmSync(baseDir, { recursive: true, force: true });
 		}
 	});
-
 });
 class SyncSlashProvider implements AutocompleteProvider {
 	async getSuggestions(

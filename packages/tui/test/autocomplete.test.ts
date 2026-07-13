@@ -316,7 +316,9 @@ describe("CombinedAutocompleteProvider", () => {
 							allowArgs: true,
 							getArgumentCompletions: (prefix: string) =>
 								prefix.includes(" ") || prefix === ""
-									? (prefix === "" ? [{ value: "set ", label: "set" }] : null)
+									? prefix === ""
+										? [{ value: "set ", label: "set" }]
+										: null
 									: [{ value: "set ", label: "set" }],
 						},
 					],
